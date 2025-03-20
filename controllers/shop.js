@@ -54,48 +54,93 @@ exports.getIndex = async (_, res) => {
   }
 };
 
-exports.getCart = (req, res, next) => {
-  Cart.getCart((cart) => {
-    Product.fetchAll((products) => {
-      const cartProducts = [];
-      for (product of products) {
-        const cartProductData = cart.products.find(
-          (prod) => prod.id === product.id
-        );
-        if (cartProductData) {
-          cartProducts.push({ productData: product, qty: cartProductData.qty });
-        }
-      }
-      res.render("shop/cart", {
-        path: "/cart",
-        pageTitle: "Your Cart",
-        products: cartProducts,
-      });
+exports.getCart = async (req, res) => {
+  try {
+    const cart = await req.user.getCart();
+    const products = await cart.getProducts();
+
+    res.render("shop/cart", {
+      path: "/cart",
+      pageTitle: "Your Cart",
+      products: products,
     });
-  });
+  } catch (error) {
+    console.log(error);
+  }
 };
 
-exports.postCart = (req, res, next) => {
-  const prodId = req.body.productId;
-  Product.findById(prodId, (product) => {
-    Cart.addProduct(prodId, product.price);
-  });
-  res.redirect("/cart");
-};
+exports.postCart = async (req, res) => {
+  try {
+    const prodId = req.body.productId;
+    const cart = await req.user.getCart();
+    const [existingProduct] = await cart.getProducts({ where: { id: prodId } });
 
-exports.postCartDeleteProduct = (req, res, next) => {
-  const prodId = req.body.productId;
-  Product.findById(prodId, (product) => {
-    Cart.deleteProduct(prodId, product.price);
+    if (existingProduct) {
+      await existingProduct.cartItem.increment("quantity");
+    } else {
+      const product = await Product.findByPk(prodId);
+      await cart.addProduct(product, { through: { quantity: 1 } });
+    }
+
     res.redirect("/cart");
-  });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ error: "Failed to add product to cart" });
+  }
 };
 
-exports.getOrders = (req, res, next) => {
-  res.render("shop/orders", {
-    path: "/orders",
-    pageTitle: "Your Orders",
-  });
+exports.postCartDeleteProduct = async (req, res) => {
+  try {
+    const prodId = req.body.productId;
+    const cart = await req.user.getCart();
+    const [product] = await cart.getProducts({ where: { id: prodId } });
+
+    if (product) {
+      await product.cartItem.destroy();
+    }
+
+    res.redirect("/cart");
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ error: "Failed to delete product from cart" });
+  }
+};
+
+exports.postOrder = async (req, res) => {
+  try {
+    const cart = await req.user.getCart();
+    const products = await cart.getProducts();
+    const order = await req.user.createOrder();
+
+    await order.addProducts(
+      products.map((product) => {
+        product.orderItem = { quantity: product.cartItem.quantity };
+        return product;
+      })
+    );
+
+    await cart.setProducts(null);
+
+    res.redirect("/orders");
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ error: "Failed to create order" });
+  }
+};
+
+exports.getOrders = async (req, res) => {
+  try {
+    const orders = await req.user.getOrders({ include: ["products"] });
+    console.log("ORDERS", orders);
+    res.render("shop/orders", {
+      path: "/orders",
+      pageTitle: "Your Orders",
+      orders: orders,
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ error: "Failed to fetch orders" });
+  }
 };
 
 exports.getCheckout = (req, res, next) => {
